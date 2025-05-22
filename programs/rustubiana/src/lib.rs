@@ -1,11 +1,11 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::clock;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("6jm6mnCoAMJe4ZbvoBXfeiNJ1Bb8kz29Yq2HsQBBzezQ");
 
 #[program]
 pub mod rustubiana {
-    use anchor_lang::solana_program::clock;
 
     use super::*;
 
@@ -84,10 +84,8 @@ pub struct Bid<'info> {
     #[account(mut)]
     pub bidder: Signer<'info>,
 
-    pub nft: Account<'info, Mint>,
-
     #[account(mut)]
-    pub vault_pda: UncheckedAccount<'info>,
+    pub pda_account: UncheckedAccount<'info>,
 
     #[account(mut)]
     pub previous_highest_bidder: UncheckedAccount<'info>,
@@ -96,10 +94,14 @@ pub struct Bid<'info> {
 }
 
 // TODO:
-// Está isto correcto?
+// Implementar um PDA Account
+//
+// Transfer NFT from Owner account to PDA Account
+//
+//
 
 // FIXME:
-// Arranjar a parte do NFT (i don't know more than me at this point)
+// Arranjar a parte do NFT (i don't know anymore at this point)
 
 #[derive(Accounts)]
 pub struct EndAuction<'info> {
@@ -116,7 +118,7 @@ pub struct EndAuction<'info> {
     pub nft_buyer: Account<'info, TokenAccount>,
 
     #[account(mut)]
-    pub vault_pda: UncheckedAccount<'info>,
+    pub pda_account: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
 
