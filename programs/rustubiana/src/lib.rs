@@ -1,6 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token;
-use anchor_spl::token::{Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("6jm6mnCoAMJe4ZbvoBXfeiNJ1Bb8kz29Yq2HsQBBzezQ");
 
@@ -24,6 +23,7 @@ pub mod rustubiana {
         auction.end_time = Clock::get()?.unix_timestamp + duration;
         auction.auction_id = auction_id;
 
+        // Transferir NFT para o escrow do leilão
         let cpi_accounts = Transfer {
             from: ctx.accounts.seller_token_account.to_account_info(),
             to: ctx.accounts.auction_token_account.to_account_info(),
@@ -31,61 +31,86 @@ pub mod rustubiana {
         };
 
         let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
-
         token::transfer(cpi_ctx, 1)?;
 
         Ok(())
     }
 
-    pub fn bid(ctx: Context<Bid>, amount: u64) -> Result<()> {
+    pub fn place_bid(ctx: Context<PlaceBid>, amount: u64) -> Result<()> {
         let auction = &mut ctx.accounts.auction;
-        let bidder = &ctx.accounts.bidder;
-        let now = Clock::get()?.unix_timestamp;
-        let (vault_pda, _bump) =
-            Pubkey::find_program_address(&[b"Vault", auction.key().as_ref()], &rustubiana::ID);
 
-        require!(now < auction.end_time, ErrorCode::AuctionAlreadyEnded);
-        require!(auction.state, ErrorCode::AuctionAlreadyEnded);
+        require!(!auction.ended, ErrorCode::AuctionEnded);
+        require!(
+            Clock::get()?.unix_timestamp < auction.end_time,
+            ErrorCode::AuctionEnded
+        );
+        require!(amount >= auction.min_bid, ErrorCode::BidTooLow);
         require!(amount > auction.highest_bid, ErrorCode::BidTooLow);
 
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.bidder_token_account.to_account_info(),
+            to: ctx.accounts.auction_sol_account.to_account_info(),
+            authority: ctx.accounts.bidder.to_account_info(),
+        };
+
+        let cpi_ctx = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+        token::transfer(cpi_ctx, amount)?;
+
         auction.highest_bid = amount;
-        auction.highest_bidder = bidder.key();
+        auction.highest_bidder = Some(*ctx.accounts.bidder.key);
 
         Ok(())
     }
 
     pub fn end_auction(ctx: Context<EndAuction>) -> Result<()> {
         let auction = &mut ctx.accounts.auction;
-        let now = Clock::get()?.unix_timestamp;
-        require!(now >= auction.end_time, ErrorCode::AuctionAlreadyEnded);
-        require!(auction.state, ErrorCode::AuctionAlreadyEnded);
 
-        auction.state = false;
+        require!(!auction.ended, ErrorCode::AuctionEnded);
+        require!(
+            Clock::get()?.unix_timestamp >= auction.end_time,
+            ErrorCode::AuctionNotEnded
+        );
 
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.nft_seller.to_account_info(),
-            to: ctx.accounts.nft_buyer.to_account_info(),
-            authority: ctx.accounts.owner.to_account_info(),
-        };
-        let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
-        token::transfer(cpi_ctx, 1)?;
+        auction.ended = true;
+
+        // Fixed: Use the bump from the context accounts, not from ctx.bumps
+        let auction_id_bytes = auction.auction_id.to_le_bytes();
+        let seeds = &[b"auction", auction_id_bytes.as_ref(), &[ctx.bumps.auction]];
+        let signer = &[&seeds[..]];
+
+        if auction.highest_bidder.is_some() {
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.auction_token_account.to_account_info(),
+                to: ctx.accounts.winner_token_account.to_account_info(),
+                authority: ctx.accounts.auction.to_account_info(),
+            };
+
+            let cpi_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                cpi_accounts,
+                signer,
+            );
+
+            token::transfer(cpi_ctx, 1)?;
+        } else {
+            let cpi_accounts = Transfer {
+                from: ctx.accounts.auction_token_account.to_account_info(),
+                to: ctx.accounts.seller_token_account.to_account_info(),
+                authority: ctx.accounts.auction.to_account_info(),
+            };
+
+            let cpi_ctx = CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                cpi_accounts,
+                signer,
+            );
+
+            token::transfer(cpi_ctx, 1)?;
+        }
 
         Ok(())
     }
 }
-
-// TODO:
-// Implementar um PDA Account
-//
-// Transfer NFT from Owner account to PDA Account
-//
-//
-
-// FIXME:
-// Arranjar a parte do NFT (i don't know anymore at this point)
-
-// Structs
 
 #[derive(Accounts)]
 #[instruction(auction_id: u64)]
@@ -100,7 +125,7 @@ pub struct CreateAuction<'info> {
     pub auction: Account<'info, Auction>,
 
     #[account(mut)]
-    pub nft: Account<'info, Mint>,
+    pub nft_mint: Account<'info, Mint>,
 
     #[account(
         mut,
@@ -123,7 +148,7 @@ pub struct CreateAuction<'info> {
     pub authority: Signer<'info>,
 
     pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
@@ -135,16 +160,10 @@ pub struct PlaceBid<'info> {
     #[account(mut)]
     pub bidder: Signer<'info>,
 
-    #[account(
-        mut,
-        constraint = bidder_token_account.owner == bidder.key(),
-    )]
+    #[account(mut)]
     pub bidder_token_account: Account<'info, TokenAccount>,
 
-    #[account(
-        mut,
-        constraint = auction_sol_account.owner == auction.key(),
-    )]
+    #[account(mut)]
     pub auction_sol_account: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
@@ -152,17 +171,25 @@ pub struct PlaceBid<'info> {
 
 #[derive(Accounts)]
 pub struct EndAuction<'info> {
-    #[account(mut, seeds = [b"auction".as_ref(), &auctino.auction_id.to_le_bytes()], bump)]
+    #[account(
+        mut,
+        seeds = [b"auction", &auction.auction_id.to_le_bytes()],
+        bump
+    )]
     pub auction: Account<'info, Auction>,
 
     #[account(mut)]
     pub seller_token_account: Account<'info, TokenAccount>,
 
-    #[account(mut, constraint = auction_token_account.mint == auction.key())]
+    #[account(
+        mut,
+        seeds = [b"auction_token_account", &auction.auction_id.to_le_bytes()],
+        bump
+    )]
     pub auction_token_account: Account<'info, TokenAccount>,
 
-    #[account(mut, constraint = winner_token_account.mint == auction.nft_mint)]
-    pub winner: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub winner_token_account: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -179,17 +206,16 @@ pub struct Auction {
     pub auction_id: u64,
 }
 
-// Espaço pre-alocado para o contrato
 impl Auction {
     pub const LEN: usize = 32 + 32 + 8 + 1 + 32 + 8 + 1 + 8 + 8;
 }
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("The auction has already ended.")]
-    AuctionAlreadyEnded,
-    #[msg("The auction still open.")]
+    #[msg("O leilão já terminou")]
+    AuctionEnded,
+    #[msg("O leilão ainda não terminou")]
     AuctionNotEnded,
-    #[msg("Your bid must be higher than the current highest bid.")]
+    #[msg("Lance muito baixo")]
     BidTooLow,
 }
