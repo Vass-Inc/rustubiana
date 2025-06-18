@@ -20,15 +20,6 @@ pub fn transfer<'info> (
 
 # Até dia 13
 
-- Instruction to create the auction for the NFT.
-- It has to transfer the NFT to pda account.
-- One instruction to configure the auction (cannot be called during runtime)
-        - reserve price,
-        - minimum bid_amount,
-        - secret highest_amount,
-- To start the auction with the configured parameters,
-
-
 # Auction
 
 

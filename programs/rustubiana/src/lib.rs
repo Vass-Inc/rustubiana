@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("6jm6mnCoAMJe4ZbvoBXfeiNJ1Bb8kz29Yq2HsQBBzezQ");
+declare_id!("FikcqryA4L7H5tHWzGZswWm8HvS19ojuVmZYdHbDRoJJ");
 
 #[program]
 pub mod rustubiana {

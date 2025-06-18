@@ -7,7 +7,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-rustubiana = "6jm6mnCoAMJe4ZbvoBXfeiNJ1Bb8kz29Yq2HsQBBzezQ"
+rustubiana = "FikcqryA4L7H5tHWzGZswWm8HvS19ojuVmZYdHbDRoJJ"
 
 [registry]
 url = "https://api.apr.dev"
