@@ -2,326 +2,187 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Rustubiana } from "../target/types/rustubiana";
 import {
-    PublicKey,
     Keypair,
-    SystemProgram,
-    SYSVAR_RENT_PUBKEY,
     LAMPORTS_PER_SOL,
+    PublicKey,
+    SystemProgram,
+    Transaction,
 } from "@solana/web3.js";
 import {
+    createMint,
+    createAssociatedTokenAccount,
+    mintTo,
+    getOrCreateAssociatedTokenAccount,
     TOKEN_PROGRAM_ID,
-    MINT_SIZE,
-    createInitializeMintInstruction,
-    getMinimumBalanceForRentExemptMint,
-    createAssociatedTokenAccountInstruction,
-    getAssociatedTokenAddress,
-    createMintToInstruction,
-    getAccount,
 } from "@solana/spl-token";
-import { expect } from "chai";
+import { assert } from "chai";
+import * as fs from "fs";
+import { Metaplex, keypairIdentity, irysStorage } from "@metaplex-foundation/js";
 
 describe("rustubiana", () => {
-    // Configure the client to use the local cluster
-    const provider = anchor.AnchorProvider.env();
-    anchor.setProvider(provider);
+    anchor.setProvider(anchor.AnchorProvider.env());
 
     const program = anchor.workspace.Rustubiana as Program<Rustubiana>;
+    const provider = anchor.AnchorProvider.env();
 
-    let nftMint: Keypair;
-    let seller: Keypair;
-    let bidder: Keypair;
+    const authority = Keypair.generate();
+    const bidder1 = Keypair.generate();
+    const bidder2 = Keypair.generate();
+
+    let nftMint: PublicKey;
     let sellerTokenAccount: PublicKey;
-    let bidderTokenAccount: PublicKey;
-    let auctionPda: PublicKey;
     let auctionTokenAccount: PublicKey;
+    let bidder1TokenAccount: PublicKey;
+    let bidder2TokenAccount: PublicKey;
 
-    // Test parameters
-    const auctionId = new anchor.BN(Math.floor(Math.random() * 1000000)); // Random auction ID
-    const minBid = new anchor.BN(0.5 * LAMPORTS_PER_SOL); // 0.5 SOL minimum bid
-    const duration = new anchor.BN(10); // 10 seconds for testing
+    const auctionId = new anchor.BN(1);
+    const minBid = new anchor.BN(1 * LAMPORTS_PER_SOL);
+    const duration = new anchor.BN(3); // Shorten for test
+
+    let auction: PublicKey;
+    let escrow: PublicKey;
+    let auctionTokenAccountBump: number;
 
     before(async () => {
-        console.log("🚀 Setting up test environment...");
+        await provider.connection.requestAirdrop(authority.publicKey, 20 * LAMPORTS_PER_SOL);
+        await provider.connection.requestAirdrop(bidder1.publicKey, 10 * LAMPORTS_PER_SOL);
+        await provider.connection.requestAirdrop(bidder2.publicKey, 10 * LAMPORTS_PER_SOL);
 
-        // Generate keypairs
-        nftMint = Keypair.generate();
-        seller = Keypair.generate();
-        bidder = Keypair.generate();
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
-        console.log("📊 Test accounts:");
-        console.log("  Seller:", seller.publicKey.toString());
-        console.log("  Bidder:", bidder.publicKey.toString());
-        console.log("  NFT Mint:", nftMint.publicKey.toString());
-        console.log("  Program:", program.programId.toString());
+        const balance = await provider.connection.getBalance(authority.publicKey);
+        console.log("Authority balance:", balance / LAMPORTS_PER_SOL, "SOL");
 
-        try {
-            // Airdrop SOL to test accounts
-            console.log("💰 Airdropping SOL to test accounts...");
+        nftMint = await createMint(provider.connection, authority, authority.publicKey, null, 0);
+        sellerTokenAccount = await createAssociatedTokenAccount(provider.connection, authority, nftMint, authority.publicKey);
+        bidder1TokenAccount = await createAssociatedTokenAccount(provider.connection, bidder1, nftMint, bidder1.publicKey);
+        bidder2TokenAccount = await createAssociatedTokenAccount(provider.connection, bidder2, nftMint, bidder2.publicKey);
 
-            const sellerAirdrop = await provider.connection.requestAirdrop(
-                seller.publicKey,
-                2 * LAMPORTS_PER_SOL
-            );
-            await provider.connection.confirmTransaction(sellerAirdrop);
+        await mintTo(provider.connection, authority, nftMint, sellerTokenAccount, authority, 1);
 
-            const bidderAirdrop = await provider.connection.requestAirdrop(
-                bidder.publicKey,
-                2 * LAMPORTS_PER_SOL
-            );
-            await provider.connection.confirmTransaction(bidderAirdrop);
-
-            // Check balances
-            const sellerBalance = await provider.connection.getBalance(seller.publicKey);
-            const bidderBalance = await provider.connection.getBalance(bidder.publicKey);
-
-            console.log("  Seller balance:", sellerBalance / LAMPORTS_PER_SOL, "SOL");
-            console.log("  Bidder balance:", bidderBalance / LAMPORTS_PER_SOL, "SOL");
-
-            // Create NFT mint
-            console.log("🎨 Creating NFT mint...");
-            const lamports = await getMinimumBalanceForRentExemptMint(provider.connection);
-
-            const createMintTx = new anchor.web3.Transaction().add(
-                SystemProgram.createAccount({
-                    fromPubkey: provider.wallet.publicKey,
-                    newAccountPubkey: nftMint.publicKey,
-                    space: MINT_SIZE,
-                    lamports,
-                    programId: TOKEN_PROGRAM_ID,
-                }),
-                createInitializeMintInstruction(
-                    nftMint.publicKey,
-                    0, // 0 decimals for NFT
-                    seller.publicKey,
-                    null
-                )
-            );
-
-            await provider.sendAndConfirm(createMintTx, [nftMint]);
-            console.log("  ✅ NFT mint created successfully");
-
-            // Create associated token accounts
-            sellerTokenAccount = await getAssociatedTokenAddress(
-                nftMint.publicKey,
-                seller.publicKey
-            );
-
-            bidderTokenAccount = await getAssociatedTokenAddress(
-                nftMint.publicKey,
-                bidder.publicKey
-            );
-
-            console.log("  Seller token account:", sellerTokenAccount.toString());
-            console.log("  Bidder token account:", bidderTokenAccount.toString());
-
-            // Create seller's token account and mint NFT
-            console.log("🏭 Minting NFT to seller...");
-            const createSellerTokenAccountTx = new anchor.web3.Transaction().add(
-                createAssociatedTokenAccountInstruction(
-                    provider.wallet.publicKey,
-                    sellerTokenAccount,
-                    seller.publicKey,
-                    nftMint.publicKey
-                ),
-                createMintToInstruction(
-                    nftMint.publicKey,
-                    sellerTokenAccount,
-                    seller.publicKey,
-                    1
-                )
-            );
-
-            await provider.sendAndConfirm(createSellerTokenAccountTx, [seller]);
-
-            // Verify NFT was minted
-            const sellerTokenAccountInfo = await getAccount(provider.connection, sellerTokenAccount);
-            console.log("  ✅ NFT minted, seller token balance:", sellerTokenAccountInfo.amount.toString());
-
-            // Derive PDAs
-            [auctionPda] = PublicKey.findProgramAddressSync(
-                [Buffer.from("auction"), auctionId.toArrayLike(Buffer, "le", 8)],
-                program.programId
-            );
-
-            [auctionTokenAccount] = PublicKey.findProgramAddressSync(
-                [
-                    Buffer.from("auction_token_account"),
-                    auctionId.toArrayLike(Buffer, "le", 8),
-                ],
-                program.programId
-            );
-
-            console.log("  Auction PDA:", auctionPda.toString());
-            console.log("  Auction token account:", auctionTokenAccount.toString());
-            console.log("🎯 Setup complete!\n");
-
-        } catch (error) {
-            console.error("❌ Setup failed:", error);
-            throw error;
-        }
-    });
-
-    it("Creates an auction", async () => {
-        console.log("🏛️ Testing auction creation...");
+        const metaplex = Metaplex.make(provider.connection)
+            .use(keypairIdentity(authority))
+            .use(irysStorage());
 
         try {
-            const tx = await program.methods
-                .createAuction(auctionId, minBid, duration)
-                .accounts({
-                    auction: auctionPda,
-                    nftMint: nftMint.publicKey,
-                    sellerTokenAccount: sellerTokenAccount,
-                    auctionTokenAccount: auctionTokenAccount,
-                    authority: seller.publicKey,
-                    tokenProgram: TOKEN_PROGRAM_ID,
-                    systemProgram: SystemProgram.programId,
-                    rent: SYSVAR_RENT_PUBKEY,
-                })
-                .signers([seller])
-                .rpc();
-
-            console.log("  📝 Transaction signature:", tx);
-
-            // Verify auction was created correctly
-            const auctionAccount = await program.account.auction.fetch(auctionPda);
-
-            console.log("  📊 Auction details:");
-            console.log("    Authority:", auctionAccount.authority.toString());
-            console.log("    NFT Mint:", auctionAccount.nftMint.toString());
-            console.log("    Min bid:", auctionAccount.minBid.toNumber() / LAMPORTS_PER_SOL, "SOL");
-            console.log("    Ended:", auctionAccount.ended);
-            console.log("    Highest bid:", auctionAccount.highestBid.toNumber());
-            console.log("    End time:", new Date(auctionAccount.endTime.toNumber() * 1000));
-
-            // Assertions
-            expect(auctionAccount.authority.toString()).to.equal(seller.publicKey.toString());
-            expect(auctionAccount.nftMint.toString()).to.equal(nftMint.publicKey.toString());
-            expect(auctionAccount.minBid.toNumber()).to.equal(minBid.toNumber());
-            expect(auctionAccount.ended).to.be.false;
-            expect(auctionAccount.highestBid.toNumber()).to.equal(0);
-            expect(auctionAccount.highestBidder).to.be.null;
-
-            // Verify NFT was transferred to auction escrow
-            const auctionTokenAccountInfo = await getAccount(provider.connection, auctionTokenAccount);
-            expect(auctionTokenAccountInfo.amount.toString()).to.equal("1");
-
-            console.log("  ✅ Auction created successfully!");
-            console.log("  ✅ NFT transferred to escrow\n");
-
+            if (fs.existsSync("/home/pedro/projetos/rustubiana/tests/release.jpeg")) {
+                const imageBuffer = fs.readFileSync("/home/pedro/projetos/rustubiana/tests/release.jpeg");
+                const imageUri = await metaplex.storage().upload(imageBuffer);
+                await metaplex.nfts().create({
+                    uri: imageUri,
+                    name: "Release Photo NFT",
+                    description: "A photo NFT for auction testing",
+                    sellerFeeBasisPoints: 500,
+                    mint: nftMint,
+                    payer: authority,
+                    maxSupply: 0,
+                });
+            } else {
+                console.log("release.jpeg not found, skipping metadata creation");
+            }
         } catch (error) {
-            console.error("  ❌ Failed to create auction:", error);
-            throw error;
+            console.log("Metaplex metadata creation failed (optional):", error.message);
         }
+
+        [auction] = PublicKey.findProgramAddressSync([
+            Buffer.from("auction"),
+            auctionId.toBuffer("le", 8),
+        ], program.programId);
+
+        [escrow] = PublicKey.findProgramAddressSync([
+            Buffer.from("escrow"),
+            auctionId.toBuffer("le", 8),
+        ], program.programId);
+
+        [auctionTokenAccount, auctionTokenAccountBump] = PublicKey.findProgramAddressSync([
+            Buffer.from("auction_token_account"),
+            auctionId.toBuffer("le", 8),
+        ], program.programId);
+
+        await program.methods.createAuction(auctionId, minBid, duration).accountsPartial({
+            auction: auction,
+            nftMint: nftMint,
+            sellerTokenAccount: sellerTokenAccount,
+            auctionTokenAccount: auctionTokenAccount,
+            escrow: escrow,
+            authority: authority.publicKey,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+        }).signers([authority]).rpc();
+
+        console.log("Authority balance:", balance / LAMPORTS_PER_SOL, "SOL");
     });
 
-    it("Waits for auction to expire", async () => {
-        console.log("⏰ Waiting for auction to expire...");
+    it("Places a bid", async () => {
+        const bidAmount = new anchor.BN(2 * LAMPORTS_PER_SOL);
 
-        // Wait for duration + 1 second
-        const waitTime = (duration.toNumber() + 1) * 1000;
-        console.log(`  Waiting ${waitTime / 1000} seconds...`);
+        await program.methods.placeBid(bidAmount).accounts({
+            auction,
+            bidder: bidder1.publicKey,
+            escrow,
+            prevBidder: bidder1.publicKey,
+            systemProgram: SystemProgram.programId,
+        }).signers([bidder1]).rpc();
 
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        console.log("  ✅ Auction should now be expired\n");
+        const auctionAccount = await program.account.auction.fetch(auction);
+        assert.equal(auctionAccount.highestBid.toString(), bidAmount.toString());
+        assert.equal(auctionAccount.highestBidder.toString(), bidder1.publicKey.toString());
+
+        const escrowBalance = await provider.connection.getBalance(escrow);
+        assert.isTrue(Math.abs(escrowBalance - bidAmount.toNumber()) < 0.01 * LAMPORTS_PER_SOL);
     });
 
-    it("Ends auction without bids", async () => {
-        console.log("🏁 Testing auction end without bids...");
+    it("Places a higher bid", async () => {
+        const higherBidAmount = new anchor.BN(3 * LAMPORTS_PER_SOL);
 
-        try {
-            const tx = await program.methods
-                .endAuction()
-                .accounts({
-                    auction: auctionPda,
-                    sellerTokenAccount: sellerTokenAccount,
-                    auctionTokenAccount: auctionTokenAccount,
-                    winnerTokenAccount: sellerTokenAccount, // Return to seller since no bids
-                    tokenProgram: TOKEN_PROGRAM_ID,
-                })
-                .rpc();
+        await program.methods.placeBid(higherBidAmount).accounts({
+            auction,
+            bidder: bidder2.publicKey,
+            escrow,
+            prevBidder: bidder1.publicKey,
+            systemProgram: SystemProgram.programId,
+        }).signers([bidder2]).rpc();
 
-            console.log("  📝 Transaction signature:", tx);
+        const updatedAuctionAccount = await program.account.auction.fetch(auction);
+        assert.equal(updatedAuctionAccount.highestBid.toString(), higherBidAmount.toString());
+        assert.equal(updatedAuctionAccount.highestBidder.toString(), bidder2.publicKey.toString());
 
-            // Verify auction ended
-            const auctionAccount = await program.account.auction.fetch(auctionPda);
-            expect(auctionAccount.ended).to.be.true;
-            console.log("  ✅ Auction marked as ended");
-
-            // Verify NFT was returned to seller
-            const sellerTokenAccountInfo = await getAccount(provider.connection, sellerTokenAccount);
-            expect(sellerTokenAccountInfo.amount.toString()).to.equal("1");
-            console.log("  ✅ NFT returned to seller");
-
-            console.log("  🎉 Auction ended successfully!\n");
-
-        } catch (error) {
-            console.error("  ❌ Failed to end auction:", error);
-            throw error;
-        }
+        const escrowBalance = await provider.connection.getBalance(escrow);
+        assert.isTrue(Math.abs(escrowBalance - higherBidAmount.toNumber()) < 0.01 * LAMPORTS_PER_SOL);
     });
 
-    it("Creates a new auction for bidding test", async () => {
-        console.log("🔄 Creating new auction for bidding test...");
+    it("Ends the auction and pays out seller", async () => {
+        await new Promise(resolve => setTimeout(resolve, 3500));
 
-        const newAuctionId = new anchor.BN(Math.floor(Math.random() * 1000000));
-        const [newAuctionPda] = PublicKey.findProgramAddressSync(
-            [Buffer.from("auction"), newAuctionId.toArrayLike(Buffer, "le", 8)],
-            program.programId
+        const sellerStartBalance = await provider.connection.getBalance(authority.publicKey);
+
+        const winnerTokenAccount = await getOrCreateAssociatedTokenAccount(
+            provider.connection,
+            bidder2,
+            nftMint,
+            bidder2.publicKey
         );
 
-        const [newAuctionTokenAccount] = PublicKey.findProgramAddressSync(
-            [
-                Buffer.from("auction_token_account"),
-                newAuctionId.toArrayLike(Buffer, "le", 8),
-            ],
-            program.programId
-        );
+        await program.methods.endAuction().accounts({
+            auction,
+            seller: authority.publicKey,
+            sellerTokenAccount,
+            auctionTokenAccount,
+            winnerTokenAccount: winnerTokenAccount.address,
+            escrow,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+        }).signers([authority]).rpc();
 
-        try {
-            const tx = await program.methods
-                .createAuction(newAuctionId, minBid, new anchor.BN(3600)) // 1 hour duration
-                .accounts({
-                    auction: newAuctionPda,
-                    nftMint: nftMint.publicKey,
-                    sellerTokenAccount: sellerTokenAccount,
-                    auctionTokenAccount: newAuctionTokenAccount,
-                    authority: seller.publicKey,
-                    tokenProgram: TOKEN_PROGRAM_ID,
-                    systemProgram: SystemProgram.programId,
-                    rent: SYSVAR_RENT_PUBKEY,
-                })
-                .signers([seller])
-                .rpc();
+        const sellerFinalBalance = await provider.connection.getBalance(authority.publicKey);
+        const diff = sellerFinalBalance - sellerStartBalance;
 
-            console.log("  ✅ New auction created for bidding test");
-            console.log("  📝 Transaction signature:", tx);
+        const auctionAccount = await program.account.auction.fetch(auction);
 
-            // Store new auction details for potential future tests
-            auctionPda = newAuctionPda;
-            auctionTokenAccount = newAuctionTokenAccount;
+        assert.isTrue(diff >= auctionAccount.highestBid.toNumber());
 
-        } catch (error) {
-            console.error("  ❌ Failed to create new auction:", error);
-            console.log("  ℹ️  This might fail if seller doesn't have NFT anymore");
-        }
-    });
-
-    after(async () => {
-        console.log("🧹 Cleaning up test environment...");
-
-        try {
-            // Check final balances
-            const sellerBalance = await provider.connection.getBalance(seller.publicKey);
-            const bidderBalance = await provider.connection.getBalance(bidder.publicKey);
-
-            console.log("  Final balances:");
-            console.log("    Seller:", sellerBalance / LAMPORTS_PER_SOL, "SOL");
-            console.log("    Bidder:", bidderBalance / LAMPORTS_PER_SOL, "SOL");
-
-        } catch (error) {
-            console.log("  ⚠️  Cleanup warning:", error.message);
-        }
-
-        console.log("🎯 Tests completed!\n");
+        const winnerBalance = await provider.connection.getTokenAccountBalance(winnerTokenAccount.address);
+        assert.equal(winnerBalance.value.uiAmount, 1);
     });
 });
