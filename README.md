@@ -1,6 +1,7 @@
-# Rustubiana — NFT Auction Smart Contract on Solana
+# Rustubiana — Smart Contract on Solana for NFT Auction
 
-Rustubiana is a Solana smart contract that enables NFT auctions with secure bidding, escrow management, and royalty support via the Metaplex Token Metadata standard. This program is written in Rust using the Anchor framework.
+Rustubiana is a Solana smart contract that enables NFT auctions with secure bidding, escrow management. 
+This program is written in Rust using the Anchor framework.
 
 ---
 ## Requirements
