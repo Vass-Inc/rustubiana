@@ -23,18 +23,6 @@ sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
 ```bash
 export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
 ```
-
-## Features
-
-- **English Auction** logic — highest bid wins
-- **Escrow-based bid system** with automatic refunds
-- **Dynamic bidding** — bidders can place multiple, increasing bids
-- **Auction timing control** with start and end timestamps
-- **NFT handling** using Metaplex Metadata & MasterEdition standards
-- Secure fund and NFT transfers using Anchor PDAs
-
----
-
 ## How It Works
 
 ### Auction Flow
